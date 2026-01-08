@@ -1,0 +1,722 @@
+{
+  "name": "Caramelo - Onboarding Completo",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "caramelo-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "webhookId": "caramelo-main"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrai dados da mensagem do WhatsApp\nconst body = $input.first().json.body || $input.first().json;\n\n// Estrutura padrão do WhatsApp Business API\nconst entry = body.entry?.[0];\nconst changes = entry?.changes?.[0];\nconst value = changes?.value;\nconst message = value?.messages?.[0];\nconst contact = value?.contacts?.[0];\n\nif (!message) {\n  return [{ json: { error: 'No message found', skip: true } }];\n}\n\n// Extrai o conteúdo da mensagem\nlet messageText = '';\nlet messageType = message.type;\n\nif (messageType === 'text') {\n  messageText = message.text?.body || '';\n} else if (messageType === 'interactive') {\n  // Botão clicado\n  messageText = message.interactive?.button_reply?.id || \n                message.interactive?.button_reply?.title || '';\n} else if (messageType === 'audio') {\n  // Marcar para transcrição\n  messageText = '[AUDIO]';\n}\n\nreturn [{\n  json: {\n    user_id: message.from,\n    user_phone: message.from,\n    user_name: contact?.profile?.name || null,\n    message: messageText,\n    message_type: messageType,\n    message_id: message.id,\n    timestamp: message.timestamp,\n    audio_id: message.audio?.id || null,\n    skip: false\n  }\n}];"
+      },
+      "id": "parse-webhook",
+      "name": "Parse WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-skip",
+      "name": "Skip Check",
+      "type": "n8n-nodes-base.if",
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "=caramelo:user:{{ $json.user_id }}"
+      },
+      "id": "memory-read",
+      "name": "Memory Read",
+      "type": "n8n-nodes-base.redis",
+      "position": [850, 200],
+      "credentials": {
+        "redis": {
+          "id": "REDIS_CREDENTIAL_ID",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combina dados da mensagem com memória\nconst message = $('Parse WhatsApp Message').first().json;\nconst memoryRaw = $input.first().json;\n\n// Parse da memória (Redis retorna string)\nlet memory = {};\ntry {\n  memory = memoryRaw ? JSON.parse(memoryRaw) : {};\n} catch (e) {\n  memory = {};\n}\n\n// Memória padrão para usuário novo\nconst defaultMemory = {\n  user_id: message.user_id,\n  phone: message.user_phone,\n  name: null,\n  company: null,\n  role: null,\n  priority: null,\n  priority_context: {\n    icp: null,\n    ticket: null,\n    current_clients: null,\n    goal: null,\n    channel: null,\n    stage: null\n  },\n  contacts: {\n    email: null,\n    linkedin: null\n  },\n  problem_synthesis: null,\n  conversation_stage: 'NEW',\n  last_interaction: new Date().toISOString(),\n  created_at: new Date().toISOString()\n};\n\n// Merge com dados existentes\nconst finalMemory = { ...defaultMemory, ...memory };\nfinalMemory.last_interaction = new Date().toISOString();\n\nreturn [{\n  json: {\n    ...message,\n    memory: finalMemory,\n    is_new_user: !memory.user_id\n  }\n}];"
+      },
+      "id": "merge-memory",
+      "name": "Merge Memory",
+      "type": "n8n-nodes-base.code",
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 150,
+          "temperature": 0
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é o roteador interno do Caramelo. Analise a mensagem e memória para decidir qual agente responde.\n\nREGRAS:\n1. Se conversation_stage = \"NEW\" ou name = null → PROFILER\n2. Se name existe mas priority = null → PROFILER\n3. Se priority existe mas falta contexto (icp, ticket, etc null) → QUALIFIER\n4. Se tem contexto suficiente e stage = \"QUALIFYING\" → SYNTHESIZER\n5. Se stage = \"SYNTHESIZED\" ou confirmou síntese → NEXTSTEPS\n6. Se stage = \"NEXT_STEPS\" e quer intro → COLLECTOR\n7. Se já tem linkedin → DONE\n8. Se mensagem é \"oi\", \"e aí\" sem contexto e last_interaction > 7 dias → PRIORITY_BUTTONS\n9. Se usuário disse \"não\", \"errou\" → QUALIFIER\n10. Dúvida → PRIORITY_BUTTONS\n\nRetorne APENAS: PROFILER, QUALIFIER, SYNTHESIZER, NEXTSTEPS, COLLECTOR, BUDDY, PRIORITY_BUTTONS ou DONE"
+            },
+            {
+              "role": "user",
+              "content": "MEMÓRIA:\nuser_id: {{ $json.memory.user_id }}\nname: {{ $json.memory.name }}\ncompany: {{ $json.memory.company }}\npriority: {{ $json.memory.priority }}\nconversation_stage: {{ $json.memory.conversation_stage }}\npriority_context: {{ JSON.stringify($json.memory.priority_context) }}\ncontacts: {{ JSON.stringify($json.memory.contacts) }}\n\nMENSAGEM: {{ $json.message }}\n\nQual agente?"
+            }
+          ]
+        }
+      },
+      "id": "router",
+      "name": "Router",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1250, 200],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "value": "PROFILER",
+              "outputKey": "profiler"
+            },
+            {
+              "value": "QUALIFIER",
+              "outputKey": "qualifier"
+            },
+            {
+              "value": "SYNTHESIZER",
+              "outputKey": "synthesizer"
+            },
+            {
+              "value": "NEXTSTEPS",
+              "outputKey": "nextsteps"
+            },
+            {
+              "value": "COLLECTOR",
+              "outputKey": "collector"
+            },
+            {
+              "value": "PRIORITY_BUTTONS",
+              "outputKey": "priority_buttons"
+            },
+            {
+              "value": "DONE",
+              "outputKey": "done"
+            }
+          ]
+        },
+        "fallbackOutput": "priority_buttons"
+      },
+      "id": "switch-agent",
+      "name": "Switch Agent",
+      "type": "n8n-nodes-base.switch",
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 500,
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é um agente interno do Caramelo. Coleta nome/empresa e prioridade.\n\nDADOS ATUAIS:\n- name: {{ $('Merge Memory').first().json.memory.name }}\n- company: {{ $('Merge Memory').first().json.memory.company }}\n- priority: {{ $('Merge Memory').first().json.memory.priority }}\n\nFLUXO:\n\n1. SE name = null:\n   Retorne JSON:\n   {\"response\": \"E aí! Sou o Caramelo 🐕 — conheço muita gente boa no ecossistema tech BR e posso te conectar com quem faz sentido.\\n\\nMas primeiro, me conta: quem é você e o que tá construindo?\", \"update_memory\": {\"conversation_stage\": \"PROFILING\"}, \"send_buttons\": false}\n\n2. SE name existe MAS priority = null:\n   Retorne JSON:\n   {\"response\": \"Show, [NAME]. Então você tá [RESUMO EM 1 FRASE].\\n\\nE agora, qual a parada mais importante pra você?\", \"update_memory\": {\"conversation_stage\": \"PRIORITY\"}, \"send_buttons\": true}\n\n3. SE usuário respondeu nome/empresa agora:\n   Extraia name, company, role da mensagem.\n   Retorne JSON:\n   {\"response\": \"[ESPELHO + PERGUNTA PRIORIDADE]\", \"update_memory\": {\"name\": \"[EXTRAÍDO]\", \"company\": \"[EXTRAÍDO]\", \"role\": \"[SE TIVER]\", \"conversation_stage\": \"PRIORITY\"}, \"send_buttons\": true}\n\n4. SE usuário escolheu prioridade (clientes/rodada/contratar):\n   Retorne JSON:\n   {\"response\": \"Beleza, vamos focar nisso então.\", \"update_memory\": {\"priority\": \"[ESCOLHIDA]\", \"conversation_stage\": \"QUALIFYING\"}, \"send_buttons\": false}\n\nREGRAS:\n- Retorne APENAS JSON válido\n- Seja breve\n- Use nome quando souber"
+            },
+            {
+              "role": "user",
+              "content": "MENSAGEM DO USUÁRIO: {{ $('Merge Memory').first().json.message }}"
+            }
+          ]
+        }
+      },
+      "id": "profiler",
+      "name": "Profiler",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1700, 0],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 500,
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é um agente interno do Caramelo. Aprofunda contexto da prioridade com MAX 2-3 perguntas.\n\nPRIORIDADE: {{ $('Merge Memory').first().json.memory.priority }}\nCONTEXTO ATUAL: {{ JSON.stringify($('Merge Memory').first().json.memory.priority_context) }}\n\nPERGUNTAS POR PRIORIDADE:\n\nSE clientes:\n- \"Que tipo de cliente você quer? Que perfil/tamanho?\"\n- \"Já tem algum cliente assim ou tá no zero?\"\n- \"De onde vieram os que você já tem?\"\nCampos: icp, ticket, current_clients, goal, channel\n\nSE rodada:\n- \"Que estágio? Ideia, tração, receita?\"\n- \"Já levantou antes?\"\n- \"Smart money ou só capital?\"\nCampos: stage, previous_rounds, investor_type\n\nSE contratar:\n- \"Que vaga? Dev, comercial, ops?\"\n- \"Sênior, pleno, júnior?\"\n- \"Já tentou onde?\"\nCampos: role_needed, seniority, channels_tried\n\nLÓGICA:\n1. Veja qual campo ainda está null\n2. Faça UMA pergunta pra preencher\n3. Extraia dados da resposta anterior\n4. Se 3+ campos preenchidos → ready_to_synthesize: true\n\nRETORNE JSON:\n{\"response\": \"[UMA PERGUNTA SÓ]\", \"update_memory\": {\"priority_context\": {\"[campo]\": \"[valor]\"}}, \"ready_to_synthesize\": false}\n\nSE pronto:\n{\"response\": \"\", \"update_memory\": {...}, \"ready_to_synthesize\": true}"
+            },
+            {
+              "role": "user",
+              "content": "MENSAGEM: {{ $('Merge Memory').first().json.message }}"
+            }
+          ]
+        }
+      },
+      "id": "qualifier",
+      "name": "Qualifier",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1700, 150],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 500,
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é um agente interno do Caramelo. Resume o problema em 1 FRASE.\n\nDADOS:\n- name: {{ $('Merge Memory').first().json.memory.name }}\n- priority: {{ $('Merge Memory').first().json.memory.priority }}\n- context: {{ JSON.stringify($('Merge Memory').first().json.memory.priority_context) }}\n\nEXEMPLOS DE BOA SÍNTESE:\n- \"você quer escalar de 5 pra 30 clientes PME sem depender só de indicação\"\n- \"você precisa de um CTO técnico urgente porque tá sozinho no código\"\n- \"você quer levantar seed de 1M mas não tem investidor no radar\"\n\nSE É PRIMEIRA SÍNTESE:\n{\"response\": \"Beleza, pelo que entendi: [SÍNTESE 1 FRASE].\\n\\nTô certo ou viajei?\", \"update_memory\": {\"conversation_stage\": \"SYNTHESIZED\", \"problem_synthesis\": \"[SÍNTESE]\"}, \"await_confirmation\": true}\n\nSE USUÁRIO CONFIRMOU (sim, isso, exato):\n{\"response\": \"\", \"update_memory\": {\"synthesis_confirmed\": true}, \"next_agent\": \"NEXTSTEPS\"}\n\nSE USUÁRIO NEGOU (não, errou):\n{\"response\": \"Opa, me explica melhor então.\", \"update_memory\": {\"conversation_stage\": \"QUALIFYING\"}, \"next_agent\": \"QUALIFIER\"}"
+            },
+            {
+              "role": "user",
+              "content": "MENSAGEM: {{ $('Merge Memory').first().json.message }}"
+            }
+          ]
+        }
+      },
+      "id": "synthesizer",
+      "name": "Synthesizer",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1700, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 700,
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é um agente interno do Caramelo. Propõe próximos passos práticos.\n\nDADOS:\n- name: {{ $('Merge Memory').first().json.memory.name }}\n- priority: {{ $('Merge Memory').first().json.memory.priority }}\n- synthesis: {{ $('Merge Memory').first().json.memory.problem_synthesis }}\n- context: {{ JSON.stringify($('Merge Memory').first().json.memory.priority_context) }}\n\nPROPONHA 2 COISAS:\n\n1) MOVIMENTO PRÁTICO (1-2 ações que pode fazer HOJE)\n   Seja específico ao contexto, não genérico.\n\n2) TIPOS DE CONEXÃO (perfis, não nomes)\n   Ex: \"founders que já montaram máquina de vendas B2B\"\n\nFORMATO:\n{\"response\": \"Posso te ajudar de duas formas:\\n\\n1) *Movimento prático*\\n[AÇÃO ESPECÍFICA]\\n\\n2) *Conexões que fazem sentido*\\n[PERFIL 1]\\n[PERFIL 2]\\n\\nQuer que eu fareja alguém assim?\", \"update_memory\": {\"conversation_stage\": \"NEXT_STEPS\"}, \"send_buttons\": true}\n\nSE USUÁRIO QUER INTRO:\n{\"response\": \"\", \"update_memory\": {\"wants_intro\": true}, \"next_agent\": \"COLLECTOR\"}\n\nSE SÓ QUER PITACO:\n{\"response\": \"Fechado! Se mudar de ideia, é só chamar. 🐕\", \"update_memory\": {\"conversation_stage\": \"ACTIVE\"}}"
+            },
+            {
+              "role": "user",
+              "content": "MENSAGEM: {{ $('Merge Memory').first().json.message }}"
+            }
+          ]
+        }
+      },
+      "id": "nextsteps",
+      "name": "NextSteps",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1700, 450],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 300,
+          "temperature": 0.5
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é um agente interno do Caramelo. Coleta LinkedIn e email.\n\nCONTATOS ATUAIS:\n- linkedin: {{ $('Merge Memory').first().json.memory.contacts.linkedin }}\n- email: {{ $('Merge Memory').first().json.memory.contacts.email }}\n\nLÓGICA:\n\n1. SE linkedin = null:\n{\"response\": \"Pra eu fazer a intro certinha, me passa teu LinkedIn.\", \"update_memory\": {\"conversation_stage\": \"COLLECTING\"}, \"awaiting\": \"linkedin\"}\n\n2. SE usuário mandou LinkedIn (contém linkedin.com):\n{\"response\": \"Guardado! E teu melhor email?\", \"update_memory\": {\"contacts\": {\"linkedin\": \"[URL]\"}}, \"awaiting\": \"email\"}\n\n3. SE usuário mandou email (contém @):\n{\"response\": \"Perfeito! Vou farejar quem faz sentido e te aviso quando tiver novidade. 🐕\", \"update_memory\": {\"contacts\": {\"email\": \"[EMAIL]\"}, \"conversation_stage\": \"ACTIVE\"}, \"flow_complete\": true}\n\n4. SE já tem os dois:\n{\"response\": \"Já tenho teu contato! Vou procurar as conexões e te aviso.\", \"update_memory\": {\"conversation_stage\": \"ACTIVE\"}, \"flow_complete\": true}\n\nVALIDAÇÕES:\n- LinkedIn: deve ter \"linkedin.com\"\n- Email: deve ter \"@\"\n- Se inválido: \"Hmm, não peguei. Manda de novo?\""
+            },
+            {
+              "role": "user",
+              "content": "MENSAGEM: {{ $('Merge Memory').first().json.message }}"
+            }
+          ]
+        }
+      },
+      "id": "collector",
+      "name": "Collector",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [1700, 600],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "response",
+              "value": "E aí, no que posso te ajudar agora? 🐕"
+            },
+            {
+              "name": "send_buttons",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "priority-buttons",
+      "name": "Priority Buttons",
+      "type": "n8n-nodes-base.set",
+      "position": [1700, 750]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "response",
+              "value": "Beleza, já tenho tudo! Te aviso quando tiver novidade das conexões. 🐕"
+            }
+          ]
+        }
+      },
+      "id": "done-node",
+      "name": "Done",
+      "type": "n8n-nodes-base.set",
+      "position": [1700, 900]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combina outputs dos agentes\nconst input = $input.first().json;\n\n// Tenta parsear se veio como string (resposta do LLM)\nlet agentOutput = input;\nif (typeof input === 'string' || input.text) {\n  const text = input.text || input;\n  try {\n    // Remove possíveis marcadores de código\n    const cleaned = text.replace(/```json\\n?|```\\n?/g, '').trim();\n    agentOutput = JSON.parse(cleaned);\n  } catch (e) {\n    // Se não é JSON, usa como response direto\n    agentOutput = { response: text };\n  }\n}\n\n// Garante estrutura padrão\nconst output = {\n  response: agentOutput.response || '',\n  update_memory: agentOutput.update_memory || {},\n  send_buttons: agentOutput.send_buttons || false,\n  buttons: agentOutput.buttons || null,\n  next_agent: agentOutput.next_agent || null,\n  flow_complete: agentOutput.flow_complete || false\n};\n\nreturn [{ json: output }];"
+      },
+      "id": "parse-agent-output",
+      "name": "Parse Agent Output",
+      "type": "n8n-nodes-base.code",
+      "position": [1950, 400]
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "maxTokens": 300,
+          "temperature": 0.8
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é a VOZ do Caramelo. Reescreva a mensagem com a personalidade dele.\n\nQUEM É O CARAMELO:\n- Vira-lata simpático do ecossistema tech BR\n- Direto mas não frio\n- Usa: \"E aí\", \"Show\", \"Beleza\", \"Fechou\", \"Boa\"\n- NÃO usa: \"Olá\", \"Prezado\", \"Como posso ajudá-lo\"\n- Máximo 1 emoji por mensagem (🐕 é a marca)\n- Frases curtas\n\nREGRAS:\n1. Mantenha a INFORMAÇÃO 100% intacta\n2. Mude apenas TOM\n3. Se já está bom, retorne igual\n4. Retorne APENAS o texto final, nada mais\n\nNome do usuário: {{ $('Merge Memory').first().json.memory.name || 'não sei ainda' }}"
+            },
+            {
+              "role": "user",
+              "content": "REESCREVA: {{ $json.response }}"
+            }
+          ]
+        }
+      },
+      "id": "caramelo-voice",
+      "name": "Caramelo Voice",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "position": [2150, 400],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepara dados para salvar na memória\nconst mergedData = $('Merge Memory').first().json;\nconst agentOutput = $('Parse Agent Output').first().json;\n\n// Merge das atualizações\nconst currentMemory = mergedData.memory;\nconst updates = agentOutput.update_memory || {};\n\n// Deep merge do priority_context\nif (updates.priority_context) {\n  updates.priority_context = {\n    ...currentMemory.priority_context,\n    ...updates.priority_context\n  };\n}\n\n// Deep merge dos contacts\nif (updates.contacts) {\n  updates.contacts = {\n    ...currentMemory.contacts,\n    ...updates.contacts\n  };\n}\n\nconst finalMemory = {\n  ...currentMemory,\n  ...updates,\n  last_interaction: new Date().toISOString()\n};\n\nreturn [{\n  json: {\n    user_id: mergedData.user_id,\n    memory_key: `caramelo:user:${mergedData.user_id}`,\n    memory_value: JSON.stringify(finalMemory),\n    memory: finalMemory\n  }\n}];"
+      },
+      "id": "prepare-memory-write",
+      "name": "Prepare Memory Write",
+      "type": "n8n-nodes-base.code",
+      "position": [2350, 400]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $json.memory_key }}",
+        "value": "={{ $json.memory_value }}",
+        "expire": false
+      },
+      "id": "memory-write",
+      "name": "Memory Write",
+      "type": "n8n-nodes-base.redis",
+      "position": [2550, 400],
+      "credentials": {
+        "redis": {
+          "id": "REDIS_CREDENTIAL_ID",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepara payload para WhatsApp\nconst voiceOutput = $('Caramelo Voice').first().json;\nconst agentOutput = $('Parse Agent Output').first().json;\nconst userData = $('Merge Memory').first().json;\n\nconst response = voiceOutput.text || voiceOutput.content || voiceOutput;\nconst sendButtons = agentOutput.send_buttons;\n\nlet payload = {\n  messaging_product: 'whatsapp',\n  to: userData.user_phone,\n  type: 'text',\n  text: {\n    body: response\n  }\n};\n\n// Se tem botões, muda para interactive\nif (sendButtons) {\n  const defaultButtons = [\n    { type: 'reply', reply: { id: 'clientes', title: '🎯 Trazer clientes' } },\n    { type: 'reply', reply: { id: 'rodada', title: '💰 Levantar rodada' } },\n    { type: 'reply', reply: { id: 'contratar', title: '👥 Contratar' } }\n  ];\n  \n  payload = {\n    messaging_product: 'whatsapp',\n    to: userData.user_phone,\n    type: 'interactive',\n    interactive: {\n      type: 'button',\n      body: {\n        text: response\n      },\n      action: {\n        buttons: agentOutput.buttons || defaultButtons\n      }\n    }\n  };\n}\n\nreturn [{ json: payload }];"
+      },
+      "id": "prepare-whatsapp-send",
+      "name": "Prepare WhatsApp Send",
+      "type": "n8n-nodes-base.code",
+      "position": [2750, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "whatsapp-send",
+      "name": "WhatsApp Send",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [2950, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WHATSAPP_CREDENTIAL_ID",
+          "name": "WhatsApp Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"ok\"}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [3150, 400]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Skip Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Check": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Memory Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memory Read": {
+      "main": [
+        [
+          {
+            "node": "Merge Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Memory": {
+      "main": [
+        [
+          {
+            "node": "Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router": {
+      "main": [
+        [
+          {
+            "node": "Switch Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Agent": {
+      "main": [
+        [
+          {
+            "node": "Profiler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Qualifier",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Synthesizer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NextSteps",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Collector",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Priority Buttons",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Profiler": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualifier": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthesizer": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NextSteps": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collector": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Priority Buttons": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Done": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Caramelo Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Caramelo Voice": {
+      "main": [
+        [
+          {
+            "node": "Prepare Memory Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Memory Write": {
+      "main": [
+        [
+          {
+            "node": "Memory Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Memory Write": {
+      "main": [
+        [
+          {
+            "node": "Prepare WhatsApp Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare WhatsApp Send": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp Send": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-08T12:00:00.000Z",
+  "versionId": "1"
+}

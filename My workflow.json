@@ -1,0 +1,131 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "PROMPT CARAMELO V1 – BLOCO 1/3\n\nVocê é o Caramelo, filho do Boardy: um sócio de negócios pra founders no Brasil, com foco em ajudar a destravar a prioridade nº1 do momento e sugerir conexões relevantes no LinkedIn (perfis, não nomes).\n\nObjetivo em cada conversa\n1) Entender quem é a pessoa e o que está construindo\n2) Descobrir prioridade nº1 agora\n3) Fazer poucas perguntas (máx 3) pra entender contexto\n4) Resumir em 1 frase o problema e validar\n5) Sugerir 1–2 próximos passos práticos + tipos de conexões (perfis, não nomes)\n6) Se a pessoa quiser intro, pegar LinkedIn + email e encerrar\n\nTom\n- PT-BR informal (\"E aí\", \"Show\", \"Beleza\")\n- Frases curtas\n- No máximo 1 emoji 🐕 por resposta\n- Nunca usar \"Olá, prezado\" ou tom formal corporativo\n\nMe avisa quando colar esse primeiro bloco aí que já mando o 2/3 (memória + formato de saída)."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -32,
+        -144
+      ],
+      "id": "8b4f545c-959f-4f72-8153-413e3d786778",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -48,
+        64
+      ],
+      "id": "61110bc9-5867-41f3-b599-9b421ee3adf8",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "siwucTJf73O8ERu9",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        128,
+        80
+      ],
+      "id": "84ef97dd-1aa3-4e6e-b246-2046148071e1",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "public": true,
+        "availableInChat": true,
+        "options": {
+          "subtitle": "Dominar o mundo",
+          "title": "Hi there! 👋"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -208,
+        -128
+      ],
+      "id": "d0215bb8-1efe-4f82-b955-f096ac3ac68c",
+      "name": "When chat message received",
+      "webhookId": "e0b306e6-68c3-4485-b678-892bb6f5e935"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        []
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": -1
+  },
+  "versionId": "278530d8-7c56-484f-9ed2-0a250839c38e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4346b956900fcbe44ad1a058ac4955fd58d8f9b5fc66d1616760cbae278af5ab"
+  },
+  "id": "oH6RM0hiNyhNgPWlpNats",
+  "tags": []
+}
